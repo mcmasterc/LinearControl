@@ -37,12 +37,44 @@ uint32_t lastCmdMs = 0;
 
 String lineBuf;
 
+// State timeout and dwell
+uint32_t stateEntryMs = 0;
+
+const uint16_t ENDPOINT_TOL = 20;   // tune this
+const uint32_t EXHALE_HOLD_MS = 0;  // set >0 later if wanted
+
 // Pending updates applied at cycle boundary
 bool pendingUpdate = false;
 float pendingBPM = 50.0;
 uint16_t pendingAMPL = 750;
 float pendingMaxDutyFrac = 0.35;
 
+// States
+typedef enum {
+    IDLE,
+    INHALE_RAMP,
+    INHALE_HOLD,
+    EXHALE_RAMP,
+    EXHALE_HOLD,
+    FAULT
+} State;
+
+State currentState = IDLE;
+
+// Logging States
+const char* stateToString(State s) {
+    switch (s) {
+        case IDLE: return "IDLE";
+        case INHALE_RAMP: return "INHALE_RAMP";
+        case INHALE_HOLD: return "INHALE_HOLD";
+        case EXHALE_RAMP: return "EXHALE_RAMP";
+        case EXHALE_HOLD: return "EXHALE_HOLD";
+        case FAULT: return "FAULT";
+        default: return "UNKNOWN";
+    }
+}
+
+// Safety for Target
 static uint16_t clampTargetRange(int32_t t)
 {
   if (t < 0) return 0;
@@ -93,6 +125,120 @@ void emergencyStop(const __FlashStringHelper* reason)
   Serial.println(reason);
 }
 
+// ----- State helpers / internals -
+void enterState(State newState)
+{
+  currentState = newState;
+  stateEntryMs = millis();
+
+  // Apply pending updates at the start of a new inhale cycle
+  if (newState == INHALE_RAMP && pendingUpdate)
+  {
+    BPM = pendingBPM;
+    AMPL = pendingAMPL;
+    applyMaxDutyFrac(pendingMaxDutyFrac);
+    pendingUpdate = false;
+
+    Serial.print(F("# APPLIED BPM=")); Serial.print(BPM, 2);
+    Serial.print(F(" AMPL=")); Serial.print(AMPL);
+    Serial.print(F(" MAXDUTYFRAC=")); Serial.println(MAXDUTY_FRAC, 3);
+  }
+}
+
+static bool endpointReached(uint16_t fb, uint16_t endpoint, uint16_t tol)
+{
+  return abs((int32_t)fb - (int32_t)endpoint) <= (int32_t)tol;
+}
+// ----- State function -----------
+uint16_t updateStateMachine(uint16_t scaledFb,
+                            uint32_t inhaleMs,
+                            uint32_t holdMs,
+                            uint32_t exhaleMs,
+                            uint8_t &phase)
+{
+  const uint16_t inhaleEndpoint =
+      clampToSafeWindow(clampTargetRange((int32_t)CENTER + (int32_t)AMPL));
+
+  const uint16_t exhaleEndpoint =
+      clampToSafeWindow(CENTER);
+
+  // If not running, just hold center / exhale endpoint
+  if (!systemRunning)
+  {
+    if (currentState != IDLE) enterState(IDLE);
+    phase = 1;   // treat as hold for logging
+    return exhaleEndpoint;
+  }
+
+  // Auto-start state machine from IDLE
+  if (currentState == IDLE)
+  {
+    enterState(INHALE_RAMP);
+  }
+
+  uint16_t target = exhaleEndpoint;
+
+  switch (currentState)
+  {
+    case INHALE_RAMP:
+      phase = 0;                 // inhale
+      target = inhaleEndpoint;
+
+      if (endpointReached(scaledFb, inhaleEndpoint, ENDPOINT_TOL) ||
+          (millis() - stateEntryMs >= inhaleMs))
+      {
+        enterState(INHALE_HOLD);
+      }
+      break;
+
+    case INHALE_HOLD:
+      phase = 1;                 // hold
+      target = inhaleEndpoint;
+
+      if (millis() - stateEntryMs >= holdMs)
+      {
+        enterState(EXHALE_RAMP);
+      }
+      break;
+
+    case EXHALE_RAMP:
+      phase = 2;                 // exhale
+      target = exhaleEndpoint;
+
+      if (endpointReached(scaledFb, exhaleEndpoint, ENDPOINT_TOL) ||
+          (millis() - stateEntryMs >= exhaleMs))
+      {
+        if (EXHALE_HOLD_MS > 0)
+          enterState(EXHALE_HOLD);
+        else
+          enterState(INHALE_RAMP);
+      }
+      break;
+
+    case EXHALE_HOLD:
+      phase = 1;                 // hold
+      target = exhaleEndpoint;
+
+      if (millis() - stateEntryMs >= EXHALE_HOLD_MS)
+      {
+        enterState(INHALE_RAMP);
+      }
+      break;
+
+    case FAULT:
+      phase = 1;
+      target = exhaleEndpoint;
+      break;
+
+    default:
+      phase = 1;
+      target = exhaleEndpoint;
+      enterState(IDLE);
+      break;
+  }
+
+  return clampToSafeWindow(target);
+}
 // ----- Host command handling -----
 void noteCommandReceived()
 {
@@ -117,6 +263,7 @@ void parseCommand(const String &line)
   if (s.equalsIgnoreCase("STOP"))
   {
     systemRunning = false;
+    enterState(IDLE);
     emergencyStop(F("STOP command"));
     noteCommandReceived();
     return;
@@ -124,6 +271,7 @@ void parseCommand(const String &line)
   if (s.equalsIgnoreCase("START"))
   {
     systemRunning = true;
+    enterState(INHALE_RAMP);
     goSafeHoldCenter();   // optional: move safely before resuming
     Serial.println(F("# STARTED"));
     noteCommandReceived();
@@ -244,8 +392,7 @@ void setup()
   // Start at safe center
   goSafeHoldCenter();
 
-  Serial.println(F("ms,phase,target,scaledFeedback,current_mA,errHalting,errOccurred"));
-  //Serial.println(F("ms,phase,target,scaledFeedback,dutyTarget,Duty,fwDutymx,rvDutymx,current_mA,errHalting,errOccurred"));
+  Serial.println(F("ms,state,target,scaledFeedback,current_mA,errHalting,errOccurred"));
 
   cycleStartMs = millis();
   lastLogMs = millis();
@@ -266,61 +413,12 @@ void loop()
   const uint32_t holdMs   = (uint32_t)(cycleMsF * HOLD_FRAC   + 0.5f);
   const uint32_t exhaleMs = cycleMs - inhaleMs - holdMs;
 
-  uint32_t t = now - cycleStartMs;
-  if (t >= cycleMs)
-  {
-    // new cycle boundary
-    cycleStartMs = now;
-    t = 0;
+  // ----- Run target waveform ---------
+  uint16_t scaledFb = jrk.getScaledFeedback();
 
-    // Apply pending updates only at cycle boundary (smoother + safer)
-    if (pendingUpdate)
-    {
-      BPM = pendingBPM;
-      AMPL = pendingAMPL;
-      applyMaxDutyFrac(pendingMaxDutyFrac);
-      pendingUpdate = false;
+  uint8_t phase = 1;
+  uint16_t target = updateStateMachine(scaledFb, inhaleMs, holdMs, exhaleMs, phase);
 
-      Serial.print(F("# APPLIED BPM=")); Serial.print(BPM, 2);
-      Serial.print(F(" AMPL=")); Serial.print(AMPL);
-      Serial.print(F(" MAXDUTYFRAC=")); Serial.println(MAXDUTY_FRAC, 3);
-    }
-  }
-
-  if (!systemRunning)
-  {
-    goSafeHoldCenter();
-    return;  // skip waveform generation
-  }
-  // ----- Generate trapezoid waveform -----
-  uint16_t target = CENTER;
-
-  enum Phase { INHALE=0, HOLD=1, EXHALE=2 };
-  Phase phase = INHALE;
-
-  if (t < inhaleMs)
-  {
-    phase = INHALE;
-    float u = (inhaleMs > 0) ? (float)t / (float)inhaleMs : 1.0f;
-    target = clampTargetRange((int32_t)CENTER + (int32_t)(u * AMPL));
-  }
-  else if (t < inhaleMs + holdMs)
-  {
-    phase = HOLD;
-    target = clampTargetRange((int32_t)CENTER + AMPL);
-  }
-  else
-  {
-    phase = EXHALE;
-    uint32_t te = t - inhaleMs - holdMs;
-    float u = (exhaleMs > 0) ? (float)te / (float)exhaleMs : 1.0f;
-    target = clampTargetRange((int32_t)CENTER + (int32_t)((1.0f - u) * AMPL));
-  }
-
-  // Safety clamp to known safe mechanical window
-  target = clampToSafeWindow(target);
-
-  // Send target to Jrk
   jrk.setTarget(target);
 
   // ----- Read + log at fixed rate -----
@@ -328,7 +426,7 @@ void loop()
   {
     lastLogMs = now;
 
-    uint16_t scaledFb = jrk.getScaledFeedback();
+    scaledFb = jrk.getScaledFeedback();
     //int16_t  dutyTgt  = jrk.getDutyCycleTarget();
     uint16_t current  = jrk.getCurrent();
     uint16_t errH     = jrk.getErrorFlagsHalting();
@@ -339,7 +437,7 @@ void loop()
 
     Serial.print(now);
     Serial.print(',');
-    Serial.print((int)phase);
+    Serial.print(stateToString(currentState));
     Serial.print(',');
     Serial.print(target);
     Serial.print(',');
