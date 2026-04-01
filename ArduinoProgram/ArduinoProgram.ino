@@ -8,8 +8,8 @@ JrkG2Serial jrk(JRK_PORT);
 const uint32_t JRK_BAUD = 100000;   // Must match Jrk "UART, fixed baud rate"
 bool systemRunning = false;
 
-float    INHALE_FRAC = 0.40;
-float    HOLD_FRAC   = 0.10;
+float    INHALE_FRAC = 1.0f / 3.0f;      
+float    HOLD_FRAC   = 25.0f / 60.0f;           
 
 float    BPM = 25.0;             // breaths per minute
 uint16_t CENTER = 2048;          // nominal mid-point
@@ -31,7 +31,6 @@ const uint32_t HOST_TIMEOUT_MS = 4000;
 const uint16_t CURRENT_TRIP_MA = 0;  // TODO: e.g. 3000 if you want protection
 
 // ====== INTERNALS ======
-uint32_t cycleStartMs = 0;
 uint32_t lastLogMs = 0;
 uint32_t lastCmdMs = 0;
 
@@ -43,7 +42,6 @@ uint32_t stateEntryMs = 0;
 const uint16_t ENDPOINT_TOL = 20;   // tune this
 const uint32_t EXHALE_HOLD_MS = 0;  // set >0 later if wanted
 
-// Pending updates applied at cycle boundary
 bool pendingUpdate = false;
 float pendingBPM = 50.0;
 uint16_t pendingAMPL = 750;
@@ -369,7 +367,8 @@ void safetyWatchdog()
 {
   if (millis() - lastCmdMs > HOST_TIMEOUT_MS)
   {
-    // If host goes silent, stop and hold center (prevents “runaway breathing”)
+    systemRunning = false; 
+    enterState(IDLE);
     emergencyStop(F("host timeout"));
     goSafeHoldCenter();
     lastCmdMs = millis(); // avoid spamming STOP continuously
@@ -392,9 +391,8 @@ void setup()
   // Start at safe center
   goSafeHoldCenter();
 
-  Serial.println(F("ms,state,target,scaledFeedback,current_mA,errHalting,errOccurred"));
+  Serial.println(F("ms,state,target,scaledFeedback,error,current_mA,dutyTarget,dutyActual,errHalting,errOccurred"));
 
-  cycleStartMs = millis();
   lastLogMs = millis();
 }
 
@@ -426,14 +424,12 @@ void loop()
   {
     lastLogMs = now;
 
-    scaledFb = jrk.getScaledFeedback();
-    //int16_t  dutyTgt  = jrk.getDutyCycleTarget();
-    uint16_t current  = jrk.getCurrent();
-    uint16_t errH     = jrk.getErrorFlagsHalting();
-    uint16_t errO     = jrk.getErrorFlagsOccurred();
-    //int16_t Duty      = jrk.getDutyCycle();
-    //uint16_t fwDutymx = jrk.getMaxDutyCycleForward();
-    //uint16_t rvDutymx = jrk.getMaxDutyCycleReverse();
+    int16_t  dutyTgt = jrk.getDutyCycleTarget();
+    int16_t  dutyAct = jrk.getDutyCycle();
+    int16_t  error   = (int16_t)target - (int16_t)scaledFb;
+    uint16_t current = jrk.getCurrent();
+    uint16_t errH    = jrk.getErrorFlagsHalting();
+    uint16_t errO    = jrk.getErrorFlagsOccurred();
 
     Serial.print(now);
     Serial.print(',');
@@ -443,15 +439,13 @@ void loop()
     Serial.print(',');
     Serial.print(scaledFb);
     Serial.print(',');
-    //Serial.print(dutyTgt);
-    //Serial.print(',');
-    //Serial.print(Duty);
-    //Serial.print(',');
-    //Serial.print(fwDutymx);
-    //Serial.print(',');
-    //Serial.print(rvDutymx);
-    //Serial.print(',');
+    Serial.print(error);
+    Serial.print(',');
     Serial.print(current);
+    Serial.print(',');
+    Serial.print(dutyTgt);
+    Serial.print(',');
+    Serial.print(dutyAct);
     Serial.print(',');
     Serial.print(errH, HEX);
     Serial.print(',');
