@@ -8,13 +8,14 @@ JrkG2Serial jrk(JRK_PORT);
 const uint32_t JRK_BAUD = 100000;   // Must match Jrk "UART, fixed baud rate"
 bool systemRunning = false;
 
-float    INHALE_FRAC = 1.0f / 3.0f;      
-float    HOLD_FRAC   = 25.0f / 60.0f;           
+float    INHALE_FRAC  = 0.3333f;      
+float    HOLD_FRAC    = 0.4167f;
+float    HOLD_EX_FRAC = 0.1667f;         
 
-float    BPM = 25.0;             // breaths per minute
+float    BPM = 60.0;             // breaths per minute
 uint16_t CENTER = 2048;          // nominal mid-point
-uint16_t AMPL   = 400;           // counts (0..)
-float    MAXDUTY_FRAC = 0.35;    // 0.05..1.0
+uint16_t AMPL   = 500;           // counts (0..)
+float    MAXDUTY_FRAC = 0.5;    // 0.05..1.0
 
 const uint32_t LOG_DT_MS = 20;   // 50 Hz logging
 bool stopOnHaltingError = true;
@@ -40,7 +41,6 @@ String lineBuf;
 uint32_t stateEntryMs = 0;
 
 const uint16_t ENDPOINT_TOL = 20;   // tune this
-const uint32_t EXHALE_HOLD_MS = 0;  // set >0 later if wanted
 
 bool pendingUpdate = false;
 float pendingBPM = 50.0;
@@ -70,6 +70,18 @@ const char* stateToString(State s) {
         case FAULT: return "FAULT";
         default: return "UNKNOWN";
     }
+}
+
+// Ramping Target Helper
+uint16_t lerpTarget(uint16_t startVal, uint16_t endVal, uint32_t elapsedMs, uint32_t durMs)
+{
+  if (durMs == 0) return endVal;
+
+  float u = (float)elapsedMs / (float)durMs;
+  u = constrain(u, 0.0f, 1.0f);
+
+  float y = (1.0f - u) * (float)startVal + u * (float)endVal;
+  return (uint16_t)y;
 }
 
 // Safety for Target
@@ -151,7 +163,8 @@ static bool endpointReached(uint16_t fb, uint16_t endpoint, uint16_t tol)
 uint16_t updateStateMachine(uint16_t scaledFb,
                             uint32_t inhaleMs,
                             uint32_t holdMs,
-                            uint32_t exhaleMs,
+                            uint32_t exRampMs,
+                            uint32_t exHoldMs
                             uint8_t &phase)
 {
   const uint16_t inhaleEndpoint =
@@ -159,6 +172,8 @@ uint16_t updateStateMachine(uint16_t scaledFb,
 
   const uint16_t exhaleEndpoint =
       clampToSafeWindow(CENTER);
+
+  uint32_t elapsed = millis() - stateEntryMs;
 
   // If not running, just hold center / exhale endpoint
   if (!systemRunning)
@@ -180,12 +195,21 @@ uint16_t updateStateMachine(uint16_t scaledFb,
   {
     case INHALE_RAMP:
       phase = 0;                 // inhale
-      target = inhaleEndpoint;
 
-      if (endpointReached(scaledFb, inhaleEndpoint, ENDPOINT_TOL) ||
-          (millis() - stateEntryMs >= inhaleMs))
+      if (elapsed >= inhaleMs)
       {
         enterState(INHALE_HOLD);
+        target = inhaleEndpoint; // safe target for this loop
+      }
+      else if (endpointReached(scaledFb, inhaleEndpoint, ENDPOINT_TOL))
+      {
+        // Arrived early: hold at endpoint until inhaleMs expires
+        target = inhaleEndpoint;
+      }
+      else
+      {
+        // Normal ramp toward endpoint 
+        target = lerpTarget(exhaleEndpoint, inhaleEndpoint, elapsed, inhaleMs);
       }
       break;
 
@@ -193,7 +217,7 @@ uint16_t updateStateMachine(uint16_t scaledFb,
       phase = 1;                 // hold
       target = inhaleEndpoint;
 
-      if (millis() - stateEntryMs >= holdMs)
+      if (elapsed >= holdMs)
       {
         enterState(EXHALE_RAMP);
       }
@@ -201,23 +225,29 @@ uint16_t updateStateMachine(uint16_t scaledFb,
 
     case EXHALE_RAMP:
       phase = 2;                 // exhale
-      target = exhaleEndpoint;
 
-      if (endpointReached(scaledFb, exhaleEndpoint, ENDPOINT_TOL) ||
-          (millis() - stateEntryMs >= exhaleMs))
+      if (elapsed >= exRampMs)
       {
-        if (EXHALE_HOLD_MS > 0)
-          enterState(EXHALE_HOLD);
-        else
-          enterState(INHALE_RAMP);
+        enterState(EXHALE_HOLD);
+        target = exhaleEndpoint;  // safe target for this loop
       }
-      break;
+      else if (endpointReached(scaledFb, exhaleEndpoint, ENDPOINT_TOL))
+      {
+        // Arrived early: hold at endpoint until exRampMs expires
+        target = exhaleEndpoint;
+
+      }
+      else
+      {
+        // Normal ramp back toward exhale endpoint
+        target = lerpTarget(inhaleEndpoint, exhaleEndpoint, elapsed, exRampMs);
+      }  
 
     case EXHALE_HOLD:
       phase = 1;                 // hold
       target = exhaleEndpoint;
 
-      if (millis() - stateEntryMs >= EXHALE_HOLD_MS)
+      if (elapsed >= exHoldMs)
       {
         enterState(INHALE_RAMP);
       }
@@ -411,11 +441,16 @@ void loop()
   const uint32_t holdMs   = (uint32_t)(cycleMsF * HOLD_FRAC   + 0.5f);
   const uint32_t exhaleMs = cycleMs - inhaleMs - holdMs;
 
+  const uint32_t exHoldMs = (uint32_t)(exhaleMs * HOLD_EX_FRAC + 0.5f);
+  const uint32_t exRampMs = exhaleMs - exHoldMs;
+
+ 
+
   // ----- Run target waveform ---------
   uint16_t scaledFb = jrk.getScaledFeedback();
 
   uint8_t phase = 1;
-  uint16_t target = updateStateMachine(scaledFb, inhaleMs, holdMs, exhaleMs, phase);
+  uint16_t target = updateStateMachine(scaledFb, inhaleMs, holdMs, exRampMs, exHoldMs, phase);
 
   jrk.setTarget(target);
 
