@@ -11,8 +11,9 @@ BAUD = 115200  # Arduino USB serial baud
 
 class VentGUI:
     def __init__(self, root):
+        print(__file__)
         self.root = root
-        self.root.title("Vent Control GUI (Arduino + Jrk)")
+        self.root.title("Vent Control GUI (STEP Test)")
 
         self.ser = None
         self.rx_queue = queue.Queue()
@@ -27,6 +28,9 @@ class VentGUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.set_connected(False)
+        
+        # bind step button to keyboard Control-space bar
+        self.root.bind("<Control-space>", lambda e: self.send_step())
 
     # ---------- UI ----------
     def build_ui(self):
@@ -80,6 +84,9 @@ class VentGUI:
 
         self.btn_get = ttk.Button(frame_btn, text="GET State", command=lambda: self.send_cmd("GET"))
         self.btn_get.pack(side="left")
+        
+        self.btn_step = ttk.Button(frame_btn, text="STEP", command=self.send_step)
+        self.btn_step.pack(side="left", padx=8)
 
         self.btn_start = ttk.Button(frame_btn, text="START", command=lambda: self.send_cmd("START"))
         self.btn_start.pack(side="left", padx=8)
@@ -107,9 +114,9 @@ class VentGUI:
     def set_connected(self, connected: bool):
         state = "normal" if connected else "disabled"
         for w in [self.btn_bpm, self.btn_ampl, self.btn_maxd,
-                  self.btn_get, self.btn_start, self.btn_stop,
-                  self.btn_clear, self.btn_capture, self.btn_save,
-                  self.ent_bpm, self.ent_ampl, self.ent_maxd]:
+                self.btn_get, self.btn_step, self.btn_start, self.btn_stop,
+                self.btn_clear, self.btn_capture, self.btn_save,
+                self.ent_bpm, self.ent_ampl, self.ent_maxd]:
             w.config(state=state)
 
     # ---------- Serial ----------
@@ -218,6 +225,9 @@ class VentGUI:
         self.ent_maxd.delete(0, tk.END)
         self.ent_maxd.insert(0, f"{md:.3f}")
         self.send_cmd(f"MAXDUTY {md:.3f}")
+        
+    def send_step(self):
+        self.send_cmd("next")
 
     # ---------- Logging ----------
     def clear_log(self):

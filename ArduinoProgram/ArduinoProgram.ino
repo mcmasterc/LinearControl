@@ -4,6 +4,10 @@
 #define JRK_PORT Serial1
 JrkG2Serial jrk(JRK_PORT);
 
+// ====== Globals ========
+bool DEBUG_STEP_MODE = true;
+bool debugPauseOnStateEntry = true;
+
 // ====== USER KNOBS ======
 const uint32_t JRK_BAUD = 100000;   // Must match Jrk "UART, fixed baud rate"
 bool systemRunning = false;
@@ -46,6 +50,9 @@ bool pendingUpdate = false;
 float pendingBPM = 50.0;
 uint16_t pendingAMPL = 750;
 float pendingMaxDutyFrac = 0.35;
+
+// Debug helper
+
 
 // States
 typedef enum {
@@ -112,6 +119,31 @@ void applyMaxDuty(uint16_t d)
   Serial.println(d);
 }
 
+// ------- Debug Step Helper ------------
+void waitForSerialStep(const char* label)
+{
+  if (!DEBUG_STEP_MODE) return;
+
+  Serial.print(F("# STEP: "));
+  Serial.println(label);
+  Serial.println(F("# Send 'next' <Control-space> to continue"));
+
+  while (true)
+  {
+    handleHostCommands();   // keep serial parser alive
+
+    if (Serial.available())
+    {
+      String s = Serial.readStringUntil('\n');
+      s.trim();
+      if (s.equalsIgnoreCase("n") || s.equalsIgnoreCase("next") || s.equalsIgnoreCase("c"))
+      {
+        break;
+      }
+    }
+  }
+}
+
 void applyMaxDutyFrac(float frac)
 {
   if (frac < 0.05f) frac = 0.05f;
@@ -153,6 +185,12 @@ void enterState(State newState)
     Serial.print(F(" AMPL=")); Serial.print(AMPL);
     Serial.print(F(" MAXDUTYFRAC=")); Serial.println(MAXDUTY_FRAC, 3);
   }
+
+  if (debugPauseOnStateEntry)
+  {
+    waitForSerialStep(stateToString(newState));
+    stateEntryMs = millis();  // restart timing after the pause
+  }
 }
 
 static bool endpointReached(uint16_t fb, uint16_t endpoint, uint16_t tol)
@@ -164,7 +202,7 @@ uint16_t updateStateMachine(uint16_t scaledFb,
                             uint32_t inhaleMs,
                             uint32_t holdMs,
                             uint32_t exRampMs,
-                            uint32_t exHoldMs
+                            uint32_t exHoldMs,
                             uint8_t &phase)
 {
   const uint16_t inhaleEndpoint =
@@ -241,7 +279,8 @@ uint16_t updateStateMachine(uint16_t scaledFb,
       {
         // Normal ramp back toward exhale endpoint
         target = lerpTarget(inhaleEndpoint, exhaleEndpoint, elapsed, exRampMs);
-      }  
+      }
+      break;  
 
     case EXHALE_HOLD:
       phase = 1;                 // hold
