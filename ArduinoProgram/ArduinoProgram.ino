@@ -12,9 +12,9 @@ bool debugPauseOnStateEntry = true;
 const uint32_t JRK_BAUD = 100000;   // Must match Jrk "UART, fixed baud rate"
 bool systemRunning = false;
 
-float    INHALE_FRAC  = 0.3333f;      
-float    HOLD_FRAC    = 0.4167f;
-float    HOLD_EX_FRAC = 0.1667f;         
+float    INHALE_FRAC  = 0.2500f;      
+float    HOLD_FRAC    = 0.2500f;
+float    HOLD_EX_FRAC = 0.2500f;         
 
 float    BPM = 60.0;             // breaths per minute
 uint16_t CENTER = 2048;          // nominal mid-point
