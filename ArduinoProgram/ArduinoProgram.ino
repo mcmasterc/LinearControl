@@ -31,6 +31,7 @@ const uint16_t FB_SAFE_MAX = 4045;   // TODO: set to your safe max
 
 // Communication watchdog: if no valid command received within this time, stop.
 const uint32_t HOST_TIMEOUT_MS = 4000;
+const bool USE_HOST_WATCHDOG = false; 
 
 // Optional overcurrent trip in mA (set to 0 to disable)
 const uint16_t CURRENT_TRIP_MA = 0;  // TODO: e.g. 3000 if you want protection
@@ -434,6 +435,8 @@ void handleHostCommands()
 
 void safetyWatchdog()
 {
+  if (!USE_HOST_WATCHDOG) return; 
+
   if (millis() - lastCmdMs > HOST_TIMEOUT_MS)
   {
     systemRunning = false; 
