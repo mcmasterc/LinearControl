@@ -5,8 +5,8 @@
 JrkG2Serial jrk(JRK_PORT);
 
 // ====== Globals ========
-bool DEBUG_STEP_MODE = true;
-bool debugPauseOnStateEntry = true;
+bool DEBUG_STEP_MODE = false;
+bool debugPauseOnStateEntry = false;
 
 // ====== USER KNOBS ======
 const uint32_t JRK_BAUD = 100000;   // Must match Jrk "UART, fixed baud rate"
@@ -14,7 +14,7 @@ bool systemRunning = false;
 
 float    INHALE_FRAC  = 0.2500f;      
 float    HOLD_FRAC    = 0.2500f;
-float    HOLD_EX_FRAC = 0.2500f;         
+float    HOLD_EX_FRAC = 0.5000f;         
 
 float    BPM = 60.0;             // breaths per minute
 uint16_t CENTER = 2048;          // nominal mid-point
@@ -30,7 +30,7 @@ const uint16_t FB_SAFE_MIN = 50;     // TODO: set to your safe min
 const uint16_t FB_SAFE_MAX = 4045;   // TODO: set to your safe max
 
 // Communication watchdog: if no valid command received within this time, stop.
-const uint32_t HOST_TIMEOUT_MS = 4000;
+const uint32_t HOST_TIMEOUT_MS = 0;
 const bool USE_HOST_WATCHDOG = false; 
 
 // Optional overcurrent trip in mA (set to 0 to disable)
