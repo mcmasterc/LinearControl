@@ -367,9 +367,21 @@ void parseCommand(const String &line)
     if (v < 1) v = 1;
     if (v > 150) v = 150;
 
-    requestUpdate(v, AMPL, MAXDUTY_FRAC);
-    Serial.print(F("# PENDING BPM=")); Serial.println(v, 2);
-    noteCommandReceived();
+    if (!systemRunning && currentState == IDLE)
+    {
+      BPM = v;
+      pendingUpdate = false;
+      Serial.print(F("# APPLIED BPM="));
+      Serial.println(BPM);
+    }
+    else
+    {
+      requestUpdate(v, AMPL, MAXDUTY_FRAC);
+      Serial.print(F("# PENDING BPM=")); 
+      Serial.println(v, 2);
+    }
+
+    noteCommandReceived(); 
   }
   else if (key == "AMPL")
   {
@@ -377,8 +389,20 @@ void parseCommand(const String &line)
     if (v < 0) v = 0;
     if (v > 1500) v = 1500;
 
-    requestUpdate(BPM, (uint16_t)v, MAXDUTY_FRAC);
-    Serial.print(F("# PENDING AMPL=")); Serial.println((uint16_t)v);
+    if (!systemRunning && currentState == IDLE)
+    {
+      AMPL = (uint16_t)v;
+      pendingUpdate = false;
+      Serial.print(F("# APPLIED AMPL="));
+      Serial.println((uint16_t)v); 
+    }
+    else
+    {
+      requestUpdate(BPM, (uint16_t)v, MAXDUTY_FRAC);
+      Serial.print(F("# PENDING AMPL=")); 
+      Serial.println((uint16_t)v);
+    }
+    
     noteCommandReceived();
   }
   else if (key == "MAXDUTY")
@@ -392,8 +416,20 @@ void parseCommand(const String &line)
       frac = v;
       if (frac < 0.05f) frac = 0.05f;
       if (frac > 1.0f)  frac = 1.0f;
-      requestUpdate(BPM, AMPL, frac);
-      Serial.print(F("# PENDING MAXDUTYFRAC=")); Serial.println(frac, 3);
+
+      if (!systemRunning && currentState == IDLE)
+      {
+        applyMaxDutyFrac(frac);
+        pendingUpdate = false;
+        Serial.print(F("# APPLIED MAXDUTYFRAC="));
+        Serial.println(frac, 3);
+      }
+      else
+      {
+        requestUpdate(BPM, AMPL, frac);
+        Serial.print(F("# PENDING MAXDUTYFRAC=")); 
+        Serial.println(frac, 3);
+      }
     }
     else
     {
@@ -497,7 +533,7 @@ void loop()
   jrk.setTarget(target);
 
   // ----- Read + log at fixed rate -----
-  if (now - lastLogMs >= LOG_DT_MS)
+  if (systemRunning && now - lastLogMs >= LOG_DT_MS)
   {
     lastLogMs = now;
 
